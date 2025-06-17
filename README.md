@@ -16,4 +16,4 @@ Each folder in this repository corresponds to a YouTube video and contains:
 - 📦 Any dependencies or links mentioned
 
 ## Stay Updated
-Join my newsletter for updates on new tools, code drops, and behind-the-scenes of my builds:
+Join my newsletter for updates on my journey, code drops, and behind-the-scenes of my builds: https://journey.botandbeyondai.com/subscribe
