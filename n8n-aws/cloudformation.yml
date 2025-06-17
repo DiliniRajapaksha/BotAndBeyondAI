@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Free-Tier n8n on EC2 (t2.micro) with HTTPS + Static IP (Elastic IP) + Dynamic AMI
+
+Parameters:
+  KeyName:
+    Description: Existing EC2 KeyPair for SSH
+    Type: AWS::EC2::KeyPair::KeyName
+
+  DomainName:
+    Description: Domain name pointing to this EC2 instance (e.g., n8n.example.com)
+    Type: String
+
+  Email:
+    Description: Email for Let's Encrypt SSL registration
+    Type: String
+
+  UbuntuAmi:
+    Description: Latest Ubuntu 22.04 LTS AMI (Auto-resolved)
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+
+  EncryptionKey:
+    Description: Long random string used to encrypt credentials in the DB
+    Type: String
+    NoEcho: true  # Optional: hides the key in the console output
+
+  DbPassword:
+    Description: Supabase DB password for n8n
+    Type: String
+    NoEcho: true  # Hides the password in the AWS Console
+  DbHost:
+    Description: Hostname of your PostgreSQL server (e.g. Supabase or RDS endpoint)
+    Type: String
+
+  DbUser:
+    Description: PostgreSQL username for n8n (e.g. postgres.zsaowodxmpvnkjfblavh)
+    Type: String
+
+Resources:
+  N8NSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH, HTTP, HTTPS
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  N8NInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref N8NSecurityGroup
+      ImageId: !Ref UbuntuAmi
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt update
+          apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx
+          systemctl enable docker
+          mkdir -p /home/ubuntu/n8n
+          cd /home/ubuntu/n8n
+
+          cat <<EOF > docker-compose.yml
+          version: '3.8'
+          services:
+            n8n:
+              image: n8nio/n8n:latest
+              ports:
+                - "5678:5678"
+              environment:
+                DB_TYPE: postgresdb
+                DB_POSTGRESDB_HOST: ${DbHost}
+                DB_POSTGRESDB_PORT: 5432
+                DB_POSTGRESDB_DATABASE: postgres
+                DB_POSTGRESDB_USER: ${DbUser}
+                DB_POSTGRESDB_PASSWORD: ${DbPassword}
+                N8N_ENCRYPTION_KEY: ${EncryptionKey}
+                N8N_BASIC_AUTH_ACTIVE: "true"
+                N8N_BASIC_AUTH_USER: admin
+                N8N_BASIC_AUTH_PASSWORD: changeme
+                N8N_HOST: ${DomainName}
+                N8N_PROTOCOL: https
+                WEBHOOK_URL: https://${DomainName}
+                NODE_FUNCTION_ALLOW_EXTERNAL: "*"
+              volumes:
+                - n8n_data:/home/node/.n8n
+              restart: unless-stopped
+
+          volumes:
+            n8n_data:
+          EOF
+
+          docker-compose up -d
+
+          cat <<EON > /etc/nginx/sites-available/n8n
+          server {
+              listen 80;
+              server_name ${DomainName};
+
+              location / {
+                  proxy_pass http://localhost:5678;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade \$http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host \$host;
+                  proxy_set_header X-Real-IP \$remote_addr;
+                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto \$scheme;
+              }
+          }
+          EON
+
+          ln -s /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
+          nginx -t && systemctl restart nginx
+
+          certbot --nginx --non-interactive --agree-tos --redirect -d ${DomainName} -m ${Email}
+
+          usermod -aG docker ubuntu
+
+  N8NEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref N8NInstance
+
+Outputs:
+  StaticIP:
+    Description: Static Elastic IP to use in your DNS A-record
+    Value: !Ref N8NEIP
+
+  SSHCommand:
+    Description: SSH access command (replace .pem with your actual key file)
+    Value: !Sub "ssh -i your-key.pem ubuntu@${N8NEIP}"
+
+  AccessURL:
+    Description: Your secure n8n URL
+    Value: !Sub "https://${DomainName}"
