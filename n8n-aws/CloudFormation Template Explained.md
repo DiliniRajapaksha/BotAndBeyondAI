@@ -1,7 +1,3 @@
----
-creation_date: 2025-06-17 
-
----
 Think of CloudFormation as a tool that lets you define and set up cloud infrastructure (like servers, networks, or storage) using a text file, which AWS then automatically creates for you. 
 This specific file sets up a free-tier server running **n8n** on AWS, with a static IP address and secure HTTPS access. Here’s a step-by-step explanation:
 
